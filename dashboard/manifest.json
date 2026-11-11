@@ -1,0 +1,9 @@
+{
+  "name": "data",
+  "label": "Data",
+  "description": "Lets chats read Data reports and send them new reports or proposed charts",
+  "icon": "BarChart3",
+  "tab": { "path": "/data", "hidden": true },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

@@ -1,0 +1,18 @@
+name: data
+version: "0.1.0"
+description: "An agentic report page. Open an Excel workbook or a CSV and Hermes finds the story: it proposes charts and a headline, and you accept the ones you want onto the page. Every number is computed from your rows, not written by the model. Ask a question and an agent answers with a chart and its sources. Once you allow it, any chat can read your reports and propose charts."
+author: Adolanium
+license: MIT
+homepage: https://github.com/Adolanium/hermes-data
+manifest_version: 1
+kind: standalone
+requires_hermes: ">=0.22.6"
+
+provides_tools:
+  - data_list     # the person's reports (tools.py)
+  - data_read     # columns, summary numbers, charts and first rows of one report
+  - data_propose  # charts, waiting for review on the report
+  - data_create   # a new report from a table gathered in chat
+provides_hooks: []
+provides_middleware: []
+requires_env: []
