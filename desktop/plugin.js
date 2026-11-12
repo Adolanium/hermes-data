@@ -21,9 +21,138 @@
  *    colors through var(--ui-*) or hsl(), never a hex literal.
  */
 
-import { atom, host, icons, PALETTE_AREA, ROUTES_AREA, SIDEBAR_NAV_AREA, Streamdown, Tip, useValue } from '@hermes/plugin-sdk'
+import { atom, host, icons, PALETTE_AREA, ROUTES_AREA, SIDEBAR_NAV_AREA, Streamdown, Tip, usePluginI18n, useValue } from '@hermes/plugin-sdk'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
+
+// ---------------------------------------------------------------------------
+// Copy. The strings the page shows before you open anything live here and
+// follow the language Hermes is set to. English is the fallback for every key.
+// The bundles are written flat so they are easy to read and compare.
+// ---------------------------------------------------------------------------
+const MESSAGES = {
+  en: {
+    nav: 'Data',
+    openCommand: 'Open Data',
+    'empty.title': "What's in your data?",
+    'empty.body': 'Open a spreadsheet. Hermes finds the story and suggests the charts, and you decide which ones go on the page. Every number is worked out in your rows, never written by a model.',
+    'empty.open': 'Open a file',
+    'empty.paste': 'Paste a table',
+    'empty.sample': 'Try a sample',
+    'empty.hint': 'Excel, CSV or JSON. You can also drop a CSV on this page.',
+    'story.title': "What's the story here?",
+    'story.body': 'Hermes reads the columns, picks the charts worth seeing, and you choose which ones go on the page. Every number is worked out here, in your rows.',
+    'top.undo': 'Undo (Cmd Z)',
+    'top.redo': 'Redo (Shift Cmd Z)',
+    'top.findStory': 'Find the story',
+    'top.findMore': 'Find more',
+    'top.chart': 'Chart',
+    'top.export': 'Export',
+    'top.settings': 'Settings',
+    'compose.aboutChart': 'Ask Hermes about this chart',
+    'compose.aboutData': 'Ask Hermes about this data',
+    'compose.ask': 'Ask',
+    'compose.enter': 'Enter to ask',
+    'compose.esc': 'Esc for the whole table',
+    'compose.stop': 'Stop',
+    'quick.standsOut': 'What stands out?',
+    'quick.worry': 'What should I worry about?',
+    'quick.compare': 'How does this compare to others?',
+    'quick.why': 'Why does this happen?',
+    'quick.normal': 'Is this normal?',
+    'quick.whatNow': 'What should I do about it?',
+    'suggest.hermes': 'Hermes suggests',
+    'suggest.chat': 'A chat suggests',
+    'suggest.answer': "Hermes' answer",
+    'suggest.headline': 'Hermes suggests a headline',
+    'suggest.accept': 'Accept',
+    'suggest.skip': 'Skip',
+    'suggest.keep': 'Keep on the page',
+    'suggest.waiting': n => `${n} suggestions waiting`,
+    'suggest.acceptAll': 'Accept all',
+    'suggest.skipAll': 'Skip all',
+    'strip.show': 'Show the table',
+    'strip.hide': 'Hide the table',
+    'strip.sheets': 'Open in Sheets',
+    'strip.board': 'Pin to board',
+    'strip.sample': 'Sample table'
+  },
+  zh: {
+    nav: '数据',
+    openCommand: '打开数据',
+    'empty.title': '你的数据里有什么？',
+    'empty.body': '打开一张表格。Hermes 找出其中的故事并建议图表，由你决定哪些放到页面上。每个数字都是从你的行里算出来的，绝不由模型编写。',
+    'empty.open': '打开文件',
+    'empty.paste': '粘贴表格',
+    'empty.sample': '试试示例',
+    'empty.hint': '支持 Excel、CSV 或 JSON。也可以把 CSV 拖到这个页面上。',
+    'story.title': '这里的故事是什么？',
+    'story.body': 'Hermes 读取各列，挑出值得看的图表，由你选择哪些放到页面上。每个数字都是在这里从你的行里算出来的。',
+    'top.undo': '撤销（Cmd Z）',
+    'top.redo': '重做（Shift Cmd Z）',
+    'top.findStory': '找出故事',
+    'top.findMore': '再找找',
+    'top.chart': '图表',
+    'top.export': '导出',
+    'top.settings': '设置',
+    'compose.aboutChart': '就这张图问 Hermes',
+    'compose.aboutData': '就这份数据问 Hermes',
+    'compose.ask': '提问',
+    'compose.enter': '回车提问',
+    'compose.esc': 'Esc 回到整张表',
+    'compose.stop': '停止',
+    'quick.standsOut': '有什么突出的？',
+    'quick.worry': '我该担心什么？',
+    'quick.compare': '和其他的相比怎么样？',
+    'quick.why': '为什么会这样？',
+    'quick.normal': '这正常吗？',
+    'quick.whatNow': '我该怎么办？',
+    'suggest.hermes': 'Hermes 建议',
+    'suggest.chat': '对话建议',
+    'suggest.answer': 'Hermes 的回答',
+    'suggest.headline': 'Hermes 建议一个标题',
+    'suggest.accept': '接受',
+    'suggest.skip': '跳过',
+    'suggest.keep': '留在页面上',
+    'suggest.waiting': n => `${n} 条建议待处理`,
+    'suggest.acceptAll': '全部接受',
+    'suggest.skipAll': '全部跳过',
+    'strip.show': '显示表格',
+    'strip.hide': '隐藏表格',
+    'strip.sheets': '在 Sheets 中打开',
+    'strip.board': '钉到白板',
+    'strip.sample': '示例表格'
+  }
+}
+
+/** Hermes looks a key up as a path into a nested tree (`empty.title` is
+ *  `{ empty: { title } }`), so a flat bundle is turned into that tree when it
+ *  is registered. A key may not be both a message and the start of a longer key. */
+function messageTree(flat) {
+  const tree = {}
+
+  for (const [key, value] of Object.entries(flat)) {
+    const parts = key.split('.')
+    let node = tree
+
+    for (const part of parts.slice(0, -1)) {
+      node[part] = node[part] && typeof node[part] === 'object' ? node[part] : {}
+      node = node[part]
+    }
+
+    node[parts.at(-1)] = value
+  }
+
+  return tree
+}
+
+/** Module-level translator, for labels read once at registration and for code
+ *  outside React. Until Hermes hands over its own, it answers in English. */
+let tr = (key, ...args) => {
+  const value = MESSAGES.en[key]
+
+  return typeof value === 'function' ? value(...args) : (value ?? key)
+}
 
 const ROUTE = '/data'
 const STYLE_ID = 'hermes-data-styles'
@@ -3981,6 +4110,7 @@ function CardBody({ card, editable, table }) {
 }
 
 function Card({ card, fresh, report }) {
+  const t = usePluginI18n('data')
   const [open, setOpen] = useState(false)
   const focus = useValue($focus)
   const ref = useRef(null)
@@ -4001,7 +4131,7 @@ function Card({ card, fresh, report }) {
       jsxs('div', {
         className: 'dt-more',
         children: [
-          card.spec ? jsx(Tip, { label: 'Ask Hermes about this chart', children: jsx('button', { 'aria-label': 'Ask about this chart', className: 'dt-btn dt-icon', 'data-ask': true, onClick: () => $focus.set(focus === card.id ? null : card.id), type: 'button', children: jsx(Line, { name: 'ask' }) }) }) : null,
+          card.spec ? jsx(Tip, { label: t('compose.aboutChart'), children: jsx('button', { 'aria-label': 'Ask about this chart', className: 'dt-btn dt-icon', 'data-ask': true, onClick: () => $focus.set(focus === card.id ? null : card.id), type: 'button', children: jsx(Line, { name: 'ask' }) }) }) : null,
           jsx('button', { 'aria-label': 'Chart options', className: 'dt-btn dt-icon', 'data-menu-trigger': true, onClick: () => setOpen(value => !value), type: 'button', children: jsx(icons.Settings, { size: 15 }) }),
           open ? jsx(CardMenu, { card, close: () => setOpen(false), rootRef: ref, table }) : null
         ]
@@ -4011,21 +4141,22 @@ function Card({ card, fresh, report }) {
 }
 
 function Suggestion({ fresh, item, report }) {
+  const t = usePluginI18n('data')
   const table = tableOf(report, item)
 
   return jsxs('article', {
     className: `dt-card dt-suggest${fresh ? ' dt-enter' : ''}`,
     'data-spot': `item:${item.id}`,
     children: [
-      jsxs('div', { className: 'dt-by', children: [jsx(Wing, {}), item.kind === 'answer' ? (item.about ? `Hermes' answer about "${item.about.title}"` : "Hermes' answer") : item.by === 'chat' ? 'A chat suggests' : 'Hermes suggests'] }),
+      jsxs('div', { className: 'dt-by', children: [jsx(Wing, {}), item.kind === 'answer' ? (item.about ? `Hermes' answer about "${item.about.title}"` : t('suggest.answer')) : item.by === 'chat' ? t('suggest.chat') : t('suggest.hermes')] }),
       jsx('h3', { children: jsx('span', { style: { cursor: 'default' }, children: item.title }) }),
       jsx(CardBody, { card: item, editable: false, table }),
       item.reason ? jsx('p', { className: 'dt-reason', children: item.reason }) : null,
       jsxs('div', {
         className: 'dt-decide',
         children: [
-          jsx('button', { className: 'dt-btn dt-solid', onClick: () => decideProposal(item.id, true), type: 'button', children: item.kind === 'answer' ? 'Keep on the page' : 'Accept' }),
-          jsx('button', { className: 'dt-btn dt-line', onClick: () => decideProposal(item.id, false), type: 'button', children: 'Skip' })
+          jsx('button', { className: 'dt-btn dt-solid', onClick: () => decideProposal(item.id, true), type: 'button', children: item.kind === 'answer' ? t('suggest.keep') : t('suggest.accept') }),
+          jsx('button', { className: 'dt-btn dt-line', onClick: () => decideProposal(item.id, false), type: 'button', children: t('suggest.skip') })
         ]
       })
     ]
@@ -4040,6 +4171,7 @@ const TYPE_CHIP = {
 }
 
 function DataStrip({ report }) {
+  const t = usePluginI18n('data')
   const [open, setOpen] = useState(false)
   const cursor = useValue($cursor)
   const peers = useValue($peers)
@@ -4053,7 +4185,7 @@ function DataStrip({ report }) {
     return () => clearTimeout(timer)
   }, [])
   const table = report.table
-  const where = report.source?.kind === 'sample' ? 'Sample table' : report.source?.name
+  const where = report.source?.kind === 'sample' ? t('strip.sample') : report.source?.name
 
   return jsxs('div', {
     children: [
@@ -4061,17 +4193,17 @@ function DataStrip({ report }) {
         className: 'dt-meta',
         children: [
           jsx('span', { children: `${where ? `${where}, ` : ''}${table.rows.length.toLocaleString('en-US')} rows, ${table.columns.length} columns` }),
-          jsxs('button', { className: 'dt-btn', onClick: () => setOpen(value => !value), style: { color: 'inherit', height: 24 }, type: 'button', children: [jsx(Line, { name: 'table' }), open ? 'Hide the table' : 'Show the table'] }),
+          jsxs('button', { className: 'dt-btn', onClick: () => setOpen(value => !value), style: { color: 'inherit', height: 24 }, type: 'button', children: [jsx(Line, { name: 'table' }), open ? t('strip.hide') : t('strip.show')] }),
           peers.includes('sheets')
             ? jsx(Tip, {
                 label: 'Open this table as a grid in Sheets, to add columns and keep working on the rows',
-                children: jsxs('button', { className: 'dt-btn', onClick: () => void report$('open that table in Sheets')(() => sendToSheets(report.name, table)), style: { color: 'inherit', height: 24 }, type: 'button', children: [jsx(Line, { name: 'grid' }), 'Open in Sheets'] })
+                children: jsxs('button', { className: 'dt-btn', onClick: () => void report$('open that table in Sheets')(() => sendToSheets(report.name, table)), style: { color: 'inherit', height: 24 }, type: 'button', children: [jsx(Line, { name: 'grid' }), t('strip.sheets')] })
               })
             : null,
           peers.includes('whiteboard') && report.cards.some(card => card.kind === 'chart')
             ? jsx(Tip, {
                 label: 'Pin what each chart says to your open board in Whiteboard, as a group of notes',
-                children: jsxs('button', { className: 'dt-btn', onClick: () => void report$('pin that report to the board')(() => sendToBoard(report)), style: { color: 'inherit', height: 24 }, type: 'button', children: [jsx(Line, { name: 'pin' }), 'Pin to board'] })
+                children: jsxs('button', { className: 'dt-btn', onClick: () => void report$('pin that report to the board')(() => sendToBoard(report)), style: { color: 'inherit', height: 24 }, type: 'button', children: [jsx(Line, { name: 'pin' }), t('strip.board')] })
               })
             : null
         ]
@@ -4119,6 +4251,7 @@ function DataStrip({ report }) {
 }
 
 function Headline({ report }) {
+  const t = usePluginI18n('data')
   const pending = report.proposals.find(item => item.kind === 'headline')
   const points = useMemo(() => keyPoints(report), [report.cards, report.table])
 
@@ -4129,10 +4262,10 @@ function Headline({ report }) {
             className: 'dt-headline-suggest',
             'data-spot': `item:${pending.id}`,
             children: [
-              jsxs('div', { className: 'dt-by', style: { margin: 0, width: '100%' }, children: [jsx(Wing, {}), 'Hermes suggests a headline'] }),
+              jsxs('div', { className: 'dt-by', style: { margin: 0, width: '100%' }, children: [jsx(Wing, {}), t('suggest.headline')] }),
               jsx('b', { children: pending.text }),
-              jsx('button', { className: 'dt-btn dt-solid', onClick: () => decideProposal(pending.id, true), type: 'button', children: 'Accept' }),
-              jsx('button', { className: 'dt-btn dt-line', onClick: () => decideProposal(pending.id, false), type: 'button', children: 'Skip' })
+              jsx('button', { className: 'dt-btn dt-solid', onClick: () => decideProposal(pending.id, true), type: 'button', children: t('suggest.accept') }),
+              jsx('button', { className: 'dt-btn dt-line', onClick: () => decideProposal(pending.id, false), type: 'button', children: t('suggest.skip') })
             ]
           })
         : null,
@@ -4146,6 +4279,7 @@ function Headline({ report }) {
 }
 
 function Sheet({ report }) {
+  const t = usePluginI18n('data')
   const work = useValue($work)
   const fresh = useValue($fresh)
   const pending = report.proposals.filter(item => item.kind !== 'headline')
@@ -4162,9 +4296,9 @@ function Sheet({ report }) {
             className: 'dt-bar',
             children: [
               jsx(Wing, {}),
-              `${pending.length} suggestions waiting`,
-              jsx('button', { className: 'dt-btn dt-solid', 'data-spot': 'accept-all', onClick: acceptAll, type: 'button', children: 'Accept all' }),
-              jsx('button', { className: 'dt-btn dt-line', onClick: () => setReport({ ...$report.get(), proposals: [] }, { undo: false }), type: 'button', children: 'Skip all' })
+              t('suggest.waiting', pending.length),
+              jsx('button', { className: 'dt-btn dt-solid', 'data-spot': 'accept-all', onClick: acceptAll, type: 'button', children: t('suggest.acceptAll') }),
+              jsx('button', { className: 'dt-btn dt-line', onClick: () => setReport({ ...$report.get(), proposals: [] }, { undo: false }), type: 'button', children: t('suggest.skipAll') })
             ]
           })
         : null,
@@ -4183,9 +4317,9 @@ function Sheet({ report }) {
                 className: 'dt-cta',
                 children: [
                   jsx(Wing, { className: 'dt-mark' }),
-                  jsx('b', { children: "What's the story here?" }),
-                  jsx('p', { children: 'Hermes reads the columns, picks the charts worth seeing, and you choose which ones go on the page. Every number is worked out here, in your rows.' }),
-                  jsxs('button', { className: 'dt-btn dt-gold dt-big', 'data-spot': 'find', onClick: () => void findStory(), type: 'button', children: [jsx(Line, { name: 'spark' }), 'Find the story'] })
+                  jsx('b', { children: t('story.title') }),
+                  jsx('p', { children: t('story.body') }),
+                  jsxs('button', { className: 'dt-btn dt-gold dt-big', 'data-spot': 'find', onClick: () => void findStory(), type: 'button', children: [jsx(Line, { name: 'spark' }), t('top.findStory')] })
                 ]
               })
             : null
@@ -4263,22 +4397,23 @@ function SheetBox() {
 }
 
 function Empty({ onPaste }) {
+  const t = usePluginI18n('data')
   return jsxs('div', {
     className: 'dt-empty dt-sheet',
     style: { maxWidth: 'none' },
     children: [
       jsx(Wing, { className: 'dt-mark' }),
-      jsx('h1', { children: "What's in your data?" }),
-      jsx('p', { children: 'Open a spreadsheet. Hermes finds the story and suggests the charts, and you decide which ones go on the page. Every number is worked out in your rows, never written by a model.' }),
+      jsx('h1', { children: t('empty.title') }),
+      jsx('p', { children: t('empty.body') }),
       jsxs('div', {
         className: 'dt-ways',
         children: [
-          jsxs('button', { className: 'dt-btn dt-solid dt-big', 'data-spot': 'open', onClick: () => void report$('open that file')(openFile), type: 'button', children: [jsx(Line, { name: 'table' }), 'Open a file'] }),
-          jsxs('button', { className: 'dt-btn dt-line dt-big', onClick: onPaste, type: 'button', children: [jsx(Line, { name: 'paste' }), 'Paste a table'] }),
-          jsxs('button', { className: 'dt-btn dt-gold dt-big', 'data-spot': 'sample', onClick: () => loadTable(sampleTable(), { kind: 'sample', name: 'Coffee cart, first month' }), type: 'button', children: [jsx(Line, { name: 'spark' }), 'Try a sample'] })
+          jsxs('button', { className: 'dt-btn dt-solid dt-big', 'data-spot': 'open', onClick: () => void report$('open that file')(openFile), type: 'button', children: [jsx(Line, { name: 'table' }), t('empty.open')] }),
+          jsxs('button', { className: 'dt-btn dt-line dt-big', onClick: onPaste, type: 'button', children: [jsx(Line, { name: 'paste' }), t('empty.paste')] }),
+          jsxs('button', { className: 'dt-btn dt-gold dt-big', 'data-spot': 'sample', onClick: () => loadTable(sampleTable(), { kind: 'sample', name: 'Coffee cart, first month' }), type: 'button', children: [jsx(Line, { name: 'spark' }), t('empty.sample')] })
         ]
       }),
-      jsx('span', { className: 'dt-hint', children: 'Excel, CSV or JSON. You can also drop a CSV on this page.' })
+      jsx('span', { className: 'dt-hint', children: t('empty.hint') })
     ]
   })
 }
@@ -4319,6 +4454,7 @@ function Builder({ close, table }) {
 }
 
 function TopBar({ onPaste, report, sheetRef }) {
+  const t = usePluginI18n('data')
   const index = useValue($index)
   const sharing = useValue($chatSharing)
   const bridge = useValue($chatBridge)
@@ -4385,8 +4521,8 @@ function TopBar({ onPaste, report, sheetRef }) {
             : null
         ]
       }),
-      jsx(Tip, { label: 'Undo (Cmd Z)', children: jsx('button', { className: 'dt-btn dt-icon', onClick: undo, type: 'button', children: jsx(Line, { name: 'undo' }) }) }),
-      jsx(Tip, { label: 'Redo (Shift Cmd Z)', children: jsx('button', { className: 'dt-btn dt-icon', onClick: redo, type: 'button', children: jsx(Line, { name: 'redo' }) }) }),
+      jsx(Tip, { label: t('top.undo'), children: jsx('button', { className: 'dt-btn dt-icon', onClick: undo, type: 'button', children: jsx(Line, { name: 'undo' }) }) }),
+      jsx(Tip, { label: t('top.redo'), children: jsx('button', { className: 'dt-btn dt-icon', onClick: redo, type: 'button', children: jsx(Line, { name: 'redo' }) }) }),
       jsx('div', { className: 'dt-grow-1' }),
       report.table
         ? jsxs('button', {
@@ -4395,14 +4531,14 @@ function TopBar({ onPaste, report, sheetRef }) {
             disabled: work.busy,
             onClick: () => void findStory({ more: report.cards.length > 0 || pending > 0 }),
             type: 'button',
-            children: [jsx(Line, { name: 'spark' }), report.cards.length > 0 || pending > 0 ? 'Find more' : 'Find the story', pending > 0 ? jsx('span', { className: 'dt-badge', children: pending }) : null]
+            children: [jsx(Line, { name: 'spark' }), report.cards.length > 0 || pending > 0 ? t('top.findMore') : t('top.findStory'), pending > 0 ? jsx('span', { className: 'dt-badge', children: pending }) : null]
           })
         : null,
       report.table
         ? jsxs('div', {
             style: { position: 'relative' },
             children: [
-              jsxs('button', { className: 'dt-btn', 'data-menu-trigger': true, onClick: () => toggle('build'), type: 'button', children: [jsx(icons.Plus, { size: 15 }), 'Chart'] }),
+              jsxs('button', { className: 'dt-btn', 'data-menu-trigger': true, onClick: () => toggle('build'), type: 'button', children: [jsx(icons.Plus, { size: 15 }), t('top.chart')] }),
               menu === 'build' ? jsx(Builder, { close, table: report.table }) : null
             ]
           })
@@ -4410,7 +4546,7 @@ function TopBar({ onPaste, report, sheetRef }) {
       jsxs('div', {
         style: { position: 'relative' },
         children: [
-          jsx(Tip, { label: 'Export', children: jsx('button', { 'aria-label': 'Export', className: 'dt-btn dt-icon', 'data-menu-trigger': true, onClick: () => toggle('export'), type: 'button', children: jsx(icons.Download, { size: 15 }) }) }),
+          jsx(Tip, { label: t('top.export'), children: jsx('button', { 'aria-label': t('top.export'), className: 'dt-btn dt-icon', 'data-menu-trigger': true, onClick: () => toggle('export'), type: 'button', children: jsx(icons.Download, { size: 15 }) }) }),
           menu === 'export'
             ? jsxs('div', {
                 className: 'dt-menu',
@@ -4429,7 +4565,7 @@ function TopBar({ onPaste, report, sheetRef }) {
       jsxs('div', {
         style: { position: 'relative' },
         children: [
-          jsx(Tip, { label: 'Settings', children: jsx('button', { 'aria-label': 'Settings', className: 'dt-btn dt-icon', 'data-menu-trigger': true, onClick: () => toggle('settings'), type: 'button', children: jsx(icons.Settings, { size: 15 }) }) }),
+          jsx(Tip, { label: t('top.settings'), children: jsx('button', { 'aria-label': t('top.settings'), className: 'dt-btn dt-icon', 'data-menu-trigger': true, onClick: () => toggle('settings'), type: 'button', children: jsx(icons.Settings, { size: 15 }) }) }),
           menu === 'settings'
             ? jsxs('div', {
                 className: 'dt-menu',
@@ -4465,10 +4601,11 @@ function TopBar({ onPaste, report, sheetRef }) {
   })
 }
 
-const QUICK = ['What stands out?', 'What should I worry about?', 'How does this compare to others?']
-const QUICK_CHART = ['Why does this happen?', 'Is this normal?', 'What should I do about it?']
+const QUICK = ['quick.standsOut', 'quick.worry', 'quick.compare']
+const QUICK_CHART = ['quick.why', 'quick.normal', 'quick.whatNow']
 
 function Compose({ report }) {
+  const t = usePluginI18n('data')
   const work = useValue($work)
   const focus = useValue($focus)
   const [text, setText] = useState('')
@@ -4503,7 +4640,7 @@ function Compose({ report }) {
             children: [
               jsx(Wing, {}),
               jsx('span', { children: work.kind === 'ask' ? `Hermes is answering "${clean(work.question, 60)}" · ${work.activity}` : `Hermes is reading ${clean(report.name, 50)} · ${work.activity}` }),
-              jsx('button', { className: 'dt-btn', onClick: stopWork, type: 'button', children: 'Stop' })
+              jsx('button', { className: 'dt-btn', onClick: stopWork, type: 'button', children: t('compose.stop') })
             ]
           })
         : jsxs('div', {
@@ -4519,12 +4656,12 @@ function Compose({ report }) {
                     $focus.set(null)
                   }
                 },
-                placeholder: about ? 'Ask Hermes about this chart' : 'Ask Hermes about this data',
+                placeholder: about ? t('compose.aboutChart') : t('compose.aboutData'),
                 ref: field,
                 rows: 1,
                 value: text
               }),
-              jsx('button', { 'aria-label': 'Ask', className: 'dt-send', disabled: !clean(text, 10), onClick: () => send(), type: 'button', children: jsx(icons.ArrowUp, { size: 16 }) })
+              jsx('button', { 'aria-label': t('compose.ask'), className: 'dt-send', disabled: !clean(text, 10), onClick: () => send(), type: 'button', children: jsx(icons.ArrowUp, { size: 16 }) })
             ]
           }),
       work.busy
@@ -4533,8 +4670,8 @@ function Compose({ report }) {
             className: 'dt-quick',
             children: [
               about ? jsxs('span', { className: 'dt-scope', children: [jsx('span', { children: `About "${about.title}"` }), jsx('button', { 'aria-label': 'Ask about the whole table instead', onClick: () => $focus.set(null), type: 'button', children: jsx(icons.X, { size: 10 }) })] }) : null,
-              ...(about ? QUICK_CHART : QUICK).map(label => jsx('button', { onClick: () => send(label), type: 'button', children: label }, label)),
-              jsx('span', { className: 'dt-tail', children: about ? 'Esc for the whole table' : 'Enter to ask' })
+              ...(about ? QUICK_CHART : QUICK).map(key => jsx('button', { onClick: () => send(t(key)), type: 'button', children: t(key) }, key)),
+              jsx('span', { className: 'dt-tail', children: about ? t('compose.esc') : t('compose.enter') })
             ]
           }),
       work.error ? jsx('div', { className: 'dt-error', children: work.error }) : null
@@ -4678,6 +4815,11 @@ export default {
   name: 'Data',
   description: 'An agentic report page. Drop in a table and Hermes finds the story, chart by chart. You decide what goes on the page, and every number is worked out in your rows.',
   register(ctx) {
+    if (ctx.i18n) {
+      ctx.i18n.register(Object.fromEntries(Object.entries(MESSAGES).map(([locale, flat]) => [locale, messageTree(flat)])))
+      tr = ctx.i18n.t
+    }
+
     storage = ctx.storage
     pluginOs = ctx.os
     ctx.onDispose(installStyles())
@@ -4714,10 +4856,22 @@ export default {
       pluginOs = null
     })
 
-    ctx.registerMany([
-      { area: ROUTES_AREA, data: { path: ROUTE }, id: 'page', render: () => jsx(DataPage, {}), title: 'Data' },
-      { area: SIDEBAR_NAV_AREA, data: { codicon: 'graph', label: 'Data', path: ROUTE }, id: 'nav' },
-      { area: PALETTE_AREA, data: { id: 'data.open', keywords: ['data', 'chart', 'charts', 'csv', 'report', 'graph', 'analyse', 'analyze'], label: 'Open Data', run: () => host.navigate(ROUTE) }, id: 'open' }
-    ])
+    const registerLabels = () =>
+      ctx.registerMany([
+        { area: ROUTES_AREA, data: { path: ROUTE }, id: 'page', render: () => jsx(DataPage, {}), title: tr('nav') },
+        { area: SIDEBAR_NAV_AREA, data: { codicon: 'graph', label: tr('nav'), path: ROUTE }, id: 'nav' },
+        { area: PALETTE_AREA, data: { id: 'data.open', keywords: ['data', 'chart', 'charts', 'csv', 'report', 'graph', 'analyse', 'analyze'], label: tr('openCommand'), run: () => host.navigate(ROUTE) }, id: 'open' }
+      ])
+
+    let disposeLabels = registerLabels()
+
+    // The sidebar and the palette read these once, so rebuild them when the language changes.
+    ctx.i18n?.onLocaleChange?.(() => {
+      if (typeof disposeLabels === 'function') {
+        disposeLabels()
+      }
+
+      disposeLabels = registerLabels()
+    })
   }
 }
