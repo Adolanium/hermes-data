@@ -1,3 +1,5 @@
+<img src="docs/assets/nous-girl-folio.svg" width="88" height="88" align="right" alt="The Nous Girl, the Hermes Agent mark, in the Hermes Folio colours" />
+
 # Hermes Data
 
 An agentic report page for [Hermes Desktop](https://github.com/NousResearch/hermes-agent). Open a spreadsheet and Hermes finds the story in it, chart by chart. You decide what goes on the page.
