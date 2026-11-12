@@ -20,7 +20,7 @@ function load(options = {}) {
         lastJsonObject, loadTable, moveCard, niceCeil, noteSideOf, openFile, parseDelimited, patchCard, pointProposal, proposalItem, redo, removeCard,
         reportMarkdown, restoreReport, sampleTable, setReport, sharedReportCopy, storyPrompt, tableBrief, tableFromRows, tableFromText,
         takeChatEntry, toDate, toDelimited, toNumber, undo, sendToSheets, suiteGrid, suiteListen, suitePeers, takeSuiteTable,
-        $chatBridge, backendKey, profileRequest, setChatSharing, syncChats
+        $chatBridge, backendKey, finalAssistantText, profileRequest, recoverReply, runSession, setChatSharing, syncChats
       }
     `)
   const atom = initial => {
@@ -973,4 +973,130 @@ test('without a route list the profile is named, and an older Hermes keeps the p
   await older.profileRequest('session.create', { title: 'T' })
   assert.equal(old.calls[0].via, 'request')
   assert.deepEqual(JSON.parse(JSON.stringify(old.calls[0].params)), { title: 'T' })
+})
+
+test('an answer missing from the completion is read back from the stored transcript', async () => {
+  const asked = []
+  const page = (host => load({ host, storage: memoryStorage() }))({
+    request: async (method, params) => {
+      asked.push([method, params.session_id])
+
+      return {
+        messages: [
+          { role: 'assistant', text: 'An older answer.' },
+          { role: 'user', text: 'Do it' },
+          { role: 'assistant', text: 'Looking into it.' },
+          { name: 'web_search', role: 'tool' },
+          { role: 'assistant', text: '{"headline": "Done", "result": "Stored answer."}' }
+        ]
+      }
+    }
+  })
+
+  assert.equal(await page.recoverReply('s1', 'streamed text'), '{"headline": "Done", "result": "Stored answer."}')
+  assert.deepEqual(asked, [['session.history', 's1']])
+  // Only what came after the newest user turn counts.
+  assert.equal(page.finalAssistantText([{ role: 'assistant', text: 'Old.' }, { role: 'user', text: 'Again' }]), '')
+})
+
+test('when the transcript cannot be read, what was streamed is used, and nothing stays nothing', async () => {
+  let tries = 0
+  const down = (host => load({ host, storage: memoryStorage() }))({
+    request: async () => {
+      tries += 1
+      throw new Error('gateway restarting')
+    }
+  })
+
+  assert.equal(await down.recoverReply('s1', 'Streamed answer.'), 'Streamed answer.')
+  assert.equal(tries, 2)
+
+  const empty = (host => load({ host, storage: memoryStorage() }))({ request: async () => ({ messages: [{ role: 'user', text: 'Do it' }] }) })
+
+  assert.equal(await empty.recoverReply('s1', ''), '')
+})
+
+/** A stand-in gateway whose turn ends the way a test says: any events, then a completion. */
+function turnGateway({ complete, events = [], history }) {
+  const calls = []
+  const listeners = {}
+  const fire = (name, payload) => (listeners[name] || []).forEach(listener => listener({ payload, session_id: 's1' }))
+  const host = {
+    onEvent: (name, listener) => {
+      listeners[name] = [...(listeners[name] || []), listener]
+
+      return () => {
+        listeners[name] = listeners[name].filter(entry => entry !== listener)
+      }
+    },
+    request: async (method, params = {}) => {
+      calls.push(method)
+
+      if (method === 'session.create') {
+        return { session_id: 's1', stored_session_id: 'stored1' }
+      }
+
+      if (method === 'session.history') {
+        if (history instanceof Error) {
+          throw history
+        }
+
+        return { messages: history }
+      }
+
+      if (method === 'prompt.submit') {
+        events.forEach(([name, payload]) => fire(name, payload))
+        fire('message.complete', complete)
+      }
+
+      return {}
+    }
+  }
+
+  return { calls, host }
+}
+
+test('a run whose completion carries no text still returns the stored answer', async () => {
+  const hermes = turnGateway({
+    complete: { status: 'complete', text: '' },
+    events: [['message.delta', { text: '{"headline": "Done", ' }], ['message.delta', { text: '"result": "Streamed."}' }]],
+    history: [{ role: 'user', text: 'do it' }, { role: 'assistant', text: '{"headline": "Done", "result": "Stored."}' }]
+  })
+  const page = (host => load({ host, storage: memoryStorage() }))(hermes.host)
+  const run = await page.runSession({ maxMs: 1000, maxSteps: 4, text: 'do it', title: 'T' })
+
+  assert.equal(run.reply, '{"headline": "Done", "result": "Stored."}')
+  assert.equal(hermes.calls.filter(method => method === 'session.history').length, 1)
+})
+
+test('with no transcript to read, the text streamed after the last tool call is the answer', async () => {
+  const hermes = turnGateway({
+    complete: { status: 'complete', text: null },
+    events: [
+      ['message.delta', { text: 'Let me look that up.' }],
+      ['tool.start', { name: 'web_search' }],
+      ['message.delta', { text: '{"headline": "Done", ' }],
+      ['message.delta', { text: '"result": "Streamed."}' }]
+    ],
+    history: new Error('unknown method')
+  })
+  const page = (host => load({ host, storage: memoryStorage() }))(hermes.host)
+  const run = await page.runSession({ maxMs: 1000, maxSteps: 4, text: 'do it', title: 'T' })
+
+  assert.equal(run.reply, '{"headline": "Done", "result": "Streamed."}')
+  assert.equal(run.steps, 1)
+})
+
+test('a completion that carries its text is used as it is, with no transcript read', async () => {
+  const hermes = turnGateway({ complete: { status: 'complete', text: '{"headline": "Done", "result": "Direct."}' }, events: [['message.delta', { text: 'partial' }]], history: [] })
+  const page = (host => load({ host, storage: memoryStorage() }))(hermes.host)
+  const run = await page.runSession({ maxMs: 1000, maxSteps: 4, text: 'do it', title: 'T' })
+
+  assert.equal(run.reply, '{"headline": "Done", "result": "Direct."}')
+  assert.equal(hermes.calls.includes('session.history'), false)
+
+  // A failed turn with no text is still a failure, not an empty answer.
+  const failed = turnGateway({ complete: { status: 'error', text: '' }, history: [] })
+
+  await assert.rejects((host => load({ host, storage: memoryStorage() }))(failed.host).runSession({ maxMs: 1000, maxSteps: 4, text: 'do it', title: 'T' }), /ended as error/)
 })
