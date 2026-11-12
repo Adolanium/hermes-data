@@ -2,6 +2,8 @@
 
 An agentic report page for [Hermes Desktop](https://github.com/NousResearch/hermes-agent). Open a spreadsheet and Hermes finds the story in it, chart by chart. You decide what goes on the page.
 
+Part of [Hermes Folio](https://adolanium.github.io/hermes-folio/), with [Sheets](https://github.com/Adolanium/hermes-sheets) and [Whiteboard](https://github.com/Adolanium/hermes-whiteboard). Each works alone.
+
 ![A report Hermes helped build from a CSV: a headline, a bar chart with one gold bar and a remark pointing at it, and more charts beside it](docs/assets/report.jpg)
 
 ## What it does
