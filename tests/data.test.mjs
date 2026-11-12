@@ -20,7 +20,7 @@ function load(options = {}) {
         lastJsonObject, loadTable, moveCard, niceCeil, noteSideOf, openFile, parseDelimited, patchCard, pointProposal, proposalItem, redo, removeCard,
         reportMarkdown, restoreReport, sampleTable, setReport, sharedReportCopy, storyPrompt, tableBrief, tableFromRows, tableFromText,
         takeChatEntry, toDate, toDelimited, toNumber, undo, sendToSheets, suiteGrid, suiteListen, suitePeers, takeSuiteTable,
-        $chatBridge, backendKey, setChatSharing, syncChats
+        $chatBridge, backendKey, profileRequest, setChatSharing, syncChats
       }
     `)
   const atom = initial => {
@@ -900,4 +900,77 @@ test('a reply that arrives after a profile switch is not acted on in the new pro
   assert.equal(hermes.backends.work.calls.length, 0)
   assert.equal(hermes.backends.default.inbox.length, 1)
   assert.deepEqual(hermes.backends.default.calls, ['GET /inbox'])
+})
+
+/** A stand-in for Hermes Desktop serving two profiles from one gateway: a plain
+ *  request lands in the gateway's own profile, a routed one in the profile named. */
+function sharedGateway(options = {}) {
+  const calls = []
+  const host = {
+    profileRoutes: async () => {
+      if (options.noRoutes) {
+        throw new Error('routing unavailable')
+      }
+
+      return [
+        { connectionId: 'local', mode: 'local', profile: 'default', targetProfile: 'default' },
+        { connectionId: 'other', mode: 'remote', profile: 'work', targetProfile: 'work' },
+        { connectionId: 'local', mode: 'local', profile: 'work', targetProfile: 'work' }
+      ]
+    },
+    request: async (method, params) => {
+      calls.push({ method, params, via: 'request' })
+
+      return { session_id: 's1' }
+    },
+    requestProfile: async (route, method, params, timeoutMs, extra) => {
+      calls.push({ extra, method, params, route, via: 'requestProfile' })
+
+      return { session_id: 's1' }
+    },
+    state: { connectionId: { get: () => 'local' }, profile: { get: () => options.profile ?? 'work' } }
+  }
+
+  if (options.old) {
+    delete host.requestProfile
+    delete host.profileRoutes
+  }
+
+  return { calls, host }
+}
+
+test('a new session is started in the profile selected in Hermes, not the gateway\'s own', async () => {
+  const hermes = sharedGateway()
+  const page = load({ host: hermes.host, storage: memoryStorage() })
+
+  await page.profileRequest('session.create', { hidden: true, title: 'T' })
+  await page.profileRequest('session.create', { title: 'T' })
+
+  const plain = JSON.parse(JSON.stringify(hermes.calls))
+
+  assert.equal(plain.length, 2)
+  assert.deepEqual(plain[0], {
+    extra: { spawnPriority: 'foreground' },
+    method: 'session.create',
+    params: { hidden: true, title: 'T' },
+    route: { connectionId: 'local', mode: 'local', profile: 'work', targetProfile: 'work' },
+    via: 'requestProfile'
+  })
+  assert.equal(plain[1].route.connectionId, 'local')
+})
+
+test('without a route list the profile is named, and an older Hermes keeps the plain request', async () => {
+  const bare = sharedGateway({ noRoutes: true })
+  const page = load({ host: bare.host, storage: memoryStorage() })
+
+  await page.profileRequest('session.create', { title: 'T' })
+  assert.equal(bare.calls[0].via, 'requestProfile')
+  assert.equal(bare.calls[0].route, 'work')
+
+  const old = sharedGateway({ old: true })
+  const older = load({ host: old.host, storage: memoryStorage() })
+
+  await older.profileRequest('session.create', { title: 'T' })
+  assert.equal(old.calls[0].via, 'request')
+  assert.deepEqual(JSON.parse(JSON.stringify(old.calls[0].params)), { title: 'T' })
 })

@@ -1571,7 +1571,7 @@ function activityOf(payload) {
 
 async function createHiddenSession(title) {
   try {
-    return await host.request('session.create', { hidden: true, title })
+    return await profileRequest('session.create', { hidden: true, title })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     const code = error && typeof error === 'object' ? error.code : undefined
@@ -1583,7 +1583,7 @@ async function createHiddenSession(title) {
     }
   }
 
-  const created = await host.request('session.create', { title })
+  const created = await profileRequest('session.create', { title })
 
   if (!created?.session_id) {
     throw new Error('Hermes did not return a session.')
@@ -2406,6 +2406,41 @@ function backendKey() {
   }
 
   return `${read(host.state?.connectionId)}|${read(host.state?.profile)}`
+}
+
+/** The route descriptor for the profile selected in Hermes, kept for half a minute. */
+let profileRoute = { at: 0, key: '', route: null }
+
+/** A request that is not tied to a session yet: starting a session, a one-shot
+ *  model call, a listing. Hermes can serve several profiles from one gateway,
+ *  and there a plain host.request lands in the gateway's own profile, not the
+ *  one selected. host.requestProfile routes it to the selected profile. Once a
+ *  session exists, requests that name it follow that session by themselves. */
+async function profileRequest(method, params = {}) {
+  const [connection, profile] = backendKey().split('|')
+
+  if (!profile || typeof host.requestProfile !== 'function') {
+    return host.request(method, params)
+  }
+
+  const key = backendKey()
+
+  if (profileRoute.key !== key || Date.now() - profileRoute.at > 30000) {
+    let route = null
+
+    try {
+      const routes = typeof host.profileRoutes === 'function' ? await host.profileRoutes() : []
+
+      route = (Array.isArray(routes) ? routes : []).find(entry => entry?.profile === profile && (!connection || entry.connectionId === connection)) || null
+    } catch {
+      route = null
+    }
+
+    profileRoute = { at: Date.now(), key, route }
+  }
+
+  // A user started this, so a backend that has to wake up for it is not queued.
+  return host.requestProfile(profileRoute.route || profile, method, params, undefined, { spawnPriority: 'foreground' })
 }
 
 /** One round with the chat tools: take what chats sent, and make sure this
