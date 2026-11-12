@@ -2317,7 +2317,9 @@ function reportNotes(report) {
     }
 
     const data = chartData(tableOf(report, card), card.spec)
-    const line = fillNote(card.note, data, card.spec) || factLine(data, card.spec)
+    // One big number has no remark or fact line of its own, so the note carries the number.
+    const total = card.spec.type === 'stat' ? chartFacts(data, card.spec).total : ''
+    const line = fillNote(card.note, data, card.spec) || factLine(data, card.spec) || (total ? String(total) : '')
     const text = clean(line && card.title ? `${card.title}. ${line}` : line || card.title, 280)
 
     if (text && !out.includes(text)) {
