@@ -19,7 +19,7 @@ function load(options = {}) {
         askPrompt, chartBrief, decideProposal, defaultTitle, emptyReport, keyPoints, exportReport, factLine, fillNote, formatNumber, highlightAt, hydrate, inferColumns,
         lastJsonObject, loadTable, moveCard, niceCeil, noteSideOf, openFile, parseDelimited, patchCard, pointProposal, proposalItem, redo, removeCard,
         reportMarkdown, restoreReport, sampleTable, setReport, sharedReportCopy, storyPrompt, tableBrief, tableFromRows, tableFromText,
-        takeChatEntry, toDate, toDelimited, toNumber, undo
+        takeChatEntry, toDate, toDelimited, toNumber, undo, sendToSheets, suiteGrid, suiteListen, suitePeers, takeSuiteTable
       }
     `)
   const atom = initial => {
@@ -725,4 +725,47 @@ test("a model's reply is read as the last JSON object that fits", () => {
   assert.deepEqual(plain(dt.lastJsonObject('Here you go:\n```json\n{"charts": [{"type": "bar"}]}\n```', entry => Array.isArray(entry.charts))), { charts: [{ type: 'bar' }] })
   assert.equal(dt.lastJsonObject('no json here'), null)
   assert.deepEqual(plain(dt.lastJsonObject('{"a": 1} then {"charts": []}', entry => Array.isArray(entry.charts))), { charts: [] })
+})
+
+test('a table from Sheets becomes a new report, and a report table goes back as spreadsheet text', () => {
+  const dt = load({ storage: memoryStorage() })
+
+  dt.hydrate(memoryStorage())
+  const heard = {}
+
+  dt.suiteListen((type, listener) => {
+    heard[type] = listener
+  })
+
+  const hello = { detail: { peers: [] } }
+
+  heard['hermes-suite:hello'](hello)
+  assert.deepEqual(plain(hello.detail.peers), ['data'])
+
+  const first = dt.$report.get().id
+  const forSheets = { detail: { columns: ['a'], rows: [['1']], taken: false, to: 'sheets' } }
+  const headerOnly = { detail: { columns: ['a', 'b'], rows: [], taken: false, to: 'data' } }
+  const sent = { detail: { columns: ['product', 'price', 'margin'], from: 'sheets', name: 'Cart', rows: [['Latte', '£3.40', '62%'], ['Tea', '£2.00', '-4%'], 'junk'], taken: false, to: 'data' } }
+
+  heard['hermes-suite:table'](forSheets)
+  heard['hermes-suite:table'](headerOnly)
+  assert.equal(forSheets.detail.taken, false)
+  assert.equal(headerOnly.detail.taken, false)
+  assert.equal(dt.$report.get().id, first)
+
+  heard['hermes-suite:table'](sent)
+  assert.equal(sent.detail.taken, true)
+
+  const report = dt.$report.get()
+
+  assert.notEqual(report.id, first)
+  assert.equal(report.name, 'Cart')
+  assert.equal(report.source.name, 'From Sheets')
+  assert.deepEqual(plain(report.table.columns.map(column => [column.name, column.type, column.prefix || column.suffix || ''])), [['product', 'category', ''], ['price', 'number', '£'], ['margin', 'number', '%']])
+  assert.deepEqual(plain(report.table.rows), [['Latte', 3.4, 62], ['Tea', 2, -4]])
+  assert.deepEqual(plain(dt.suiteGrid(report.table)), { columns: ['product', 'price', 'margin'], rows: [['Latte', '£3.4', '62%'], ['Tea', '£2', '-4%']] })
+  // No window to speak through: nobody is there, and a send says so.
+  assert.deepEqual(plain(dt.suitePeers()), [])
+  assert.throws(() => dt.sendToSheets(report.name, report.table), /Sheets did not take the table/)
+  assert.throws(() => dt.sendToSheets('x', null), /no table/)
 })

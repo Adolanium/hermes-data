@@ -2227,6 +2227,170 @@ function takeChatEntry(entry) {
   return 'taken'
 }
 
+// ---------------------------------------------------------------------------
+// Working with the Sheets page. Desktop plugins load into one window, so two of
+// them can hand a table to each other with a plain window event: nothing is
+// written to disk, nothing goes through a backend, and no model is involved.
+// A handoff only ever starts from a click, and what arrives becomes a NEW
+// report here. It never touches an existing one.
+//
+//   hermes-suite:hello   detail { peers: [] }      each listener adds its id
+//   hermes-suite:table   detail { to, from, name, columns: [name], rows: [[cell]] }
+//                        the receiver sets detail.taken = true and opens it
+// ---------------------------------------------------------------------------
+
+const SUITE_HELLO = 'hermes-suite:hello'
+const SUITE_TABLE = 'hermes-suite:table'
+const SUITE_PEERS = ['data', 'sheets', 'whiteboard']
+const $peers = atom([])
+
+function suiteFire(type, detail) {
+  if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function' || typeof CustomEvent !== 'function') {
+    return detail
+  }
+
+  try {
+    window.dispatchEvent(new CustomEvent(type, { detail }))
+  } catch {
+    // A listener that throws is the other plugin's problem, not a failed click here.
+  }
+
+  return detail
+}
+
+/** The other suite pages that are installed and switched on right now. */
+function suitePeers() {
+  const peers = suiteFire(SUITE_HELLO, { from: 'data', peers: [] }).peers
+  const found = [...new Set((Array.isArray(peers) ? peers : []).filter(id => SUITE_PEERS.includes(id) && id !== 'data'))]
+
+  if (found.join() !== $peers.get().join()) {
+    $peers.set(found)
+  }
+
+  return found
+}
+
+/** A table as plain text cells, with money and percentages written the way a
+ *  spreadsheet reads them. */
+function suiteGrid(table) {
+  return {
+    columns: table.columns.map(column => column.name),
+    rows: table.rows.map(row =>
+      row.map((cell, at) => {
+        const column = table.columns[at]
+
+        if (cell === null || cell === undefined || cell === '') {
+          return ''
+        }
+
+        return column.type === 'number' && typeof cell === 'number' ? `${cell < 0 && column.prefix ? '-' : ''}${column.prefix || ''}${column.prefix ? Math.abs(cell) : cell}${column.suffix || ''}` : String(cell)
+      })
+    )
+  }
+}
+
+/** Open a table as a grid on the Sheets page. */
+function sendToSheets(name, table) {
+  if (!table || table.rows.length === 0) {
+    throw new Error('There is no table to open yet.')
+  }
+
+  const detail = suiteFire(SUITE_TABLE, { ...suiteGrid(table), from: 'data', name: clean(name, 80), taken: false, to: 'sheets' })
+
+  if (detail.taken !== true) {
+    suitePeers()
+    throw new Error('Sheets did not take the table. Switch the Sheets plugin on in Capabilities > Plugins, then try again.')
+  }
+
+  return table.rows.length
+}
+
+/** A report as notes for a board: what it concludes, one note per chart. The
+ *  words are the remark on each chart, or the computed fact when it has none,
+ *  so a note can never say something a chart does not show. */
+function reportNotes(report) {
+  const out = []
+
+  for (const card of report.cards) {
+    if (card.kind !== 'chart' || !card.spec || out.length >= 12) {
+      continue
+    }
+
+    const data = chartData(tableOf(report, card), card.spec)
+    const line = fillNote(card.note, data, card.spec) || factLine(data, card.spec)
+    const text = clean(line && card.title ? `${card.title}. ${line}` : line || card.title, 280)
+
+    if (text && !out.includes(text)) {
+      out.push(text)
+    }
+  }
+
+  return out
+}
+
+/** Pin what the report says to the open board on the Whiteboard page. */
+function sendToBoard(report) {
+  const notes = reportNotes(report)
+
+  if (notes.length === 0) {
+    throw new Error('Put a chart on the page first. Each chart becomes one note.')
+  }
+
+  const detail = suiteFire('hermes-suite:notes', { from: 'data', notes, taken: false, title: clean(report.headline || report.name, 60), to: 'whiteboard' })
+
+  if (detail.taken !== true) {
+    suitePeers()
+    throw new Error('Whiteboard did not take the notes. Switch the Whiteboard plugin on in Capabilities > Plugins, then try again.')
+  }
+
+  return notes.length
+}
+
+/** A table another suite page sent. It becomes a new report; the id comes back,
+ *  or '' when there was no table in it. */
+function takeSuiteTable(detail) {
+  const columns = (Array.isArray(detail?.columns) ? detail.columns : []).slice(0, MAX_COLUMNS).map(name => clean(name, 80))
+  const rows = (Array.isArray(detail?.rows) ? detail.rows : []).filter(Array.isArray).slice(0, MAX_ROWS)
+  const table = tableFromRows([columns, ...rows])
+
+  if (!storage || !table) {
+    return ''
+  }
+
+  const from = detail.from === 'sheets' ? 'Sheets' : 'another page'
+  const report = { ...emptyReport(clean(detail.name, 80) || 'Untitled report'), source: { kind: 'suite', name: `From ${from}` }, table: { columns: table.columns, rows: table.rows } }
+
+  storage.set(reportKey(report.id), report)
+  $index.set({ ...$index.get(), reports: [...$index.get().reports, reportMeta(report)] })
+  storage.set(INDEX_KEY, $index.get())
+
+  return report.id
+}
+
+/** Answer the other pages. Called once from register(). */
+function suiteListen(listen) {
+  listen(SUITE_HELLO, event => {
+    if (Array.isArray(event?.detail?.peers)) {
+      event.detail.peers.push('data')
+    }
+  })
+  listen(SUITE_TABLE, event => {
+    const detail = event?.detail
+
+    if (!detail || detail.to !== 'data' || detail.taken) {
+      return
+    }
+
+    const id = takeSuiteTable(detail)
+
+    if (id) {
+      detail.taken = true
+      host.navigate(ROUTE)
+      switchReport(id)
+    }
+  })
+}
+
 function watchChats() {
   let stopped = false
   let shared = false
@@ -3374,6 +3538,8 @@ const LINE = {
   scatter: 'M6 17h.01M10 12h.01M14 14h.01M18 7h.01M16 10h.01M8 9h.01',
   spark: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8ZM18 16l.8 2.2L21 19l-2.2.8L18 22l-.8-2.2L15 19l2.2-.8Z',
   stat: 'M5 17V7M5 7l-2 2M10 17h4l-4-5a2.4 2.4 0 1 1 4-1.6M18 7v10M18 7l-2 2',
+  grid: 'M4 5h16v14H4ZM4 9.7h16M4 14.3h16M9.3 5v14M14.7 5v14',
+  pin: 'M9 4h6l-1 6 3 3H7l3-3ZM12 13v7',
   table: 'M4 6h16v12H4ZM4 10h16M4 14h16M10 6v12',
   undo: 'M9 7L5 11l4 4M5 11h10a5 5 0 0 1 0 10h-2',
   wide: 'M4 8h16v8H4ZM8 12H6M6 12l1.5-1.5M6 12l1.5 1.5M16 12h2M18 12l-1.5-1.5M18 12l-1.5 1.5'
@@ -3721,6 +3887,16 @@ const TYPE_CHIP = {
 function DataStrip({ report }) {
   const [open, setOpen] = useState(false)
   const cursor = useValue($cursor)
+  const peers = useValue($peers)
+
+  // Plugins load in no fixed order, so look for Sheets now and a moment later.
+  useEffect(() => {
+    suitePeers()
+
+    const timer = setTimeout(suitePeers, 1500)
+
+    return () => clearTimeout(timer)
+  }, [])
   const table = report.table
   const where = report.source?.kind === 'sample' ? 'Sample table' : report.source?.name
 
@@ -3730,7 +3906,19 @@ function DataStrip({ report }) {
         className: 'dt-meta',
         children: [
           jsx('span', { children: `${where ? `${where}, ` : ''}${table.rows.length.toLocaleString('en-US')} rows, ${table.columns.length} columns` }),
-          jsxs('button', { className: 'dt-btn', onClick: () => setOpen(value => !value), style: { color: 'inherit', height: 24 }, type: 'button', children: [jsx(Line, { name: 'table' }), open ? 'Hide the table' : 'Show the table'] })
+          jsxs('button', { className: 'dt-btn', onClick: () => setOpen(value => !value), style: { color: 'inherit', height: 24 }, type: 'button', children: [jsx(Line, { name: 'table' }), open ? 'Hide the table' : 'Show the table'] }),
+          peers.includes('sheets')
+            ? jsx(Tip, {
+                label: 'Open this table as a grid in Sheets, to add columns and keep working on the rows',
+                children: jsxs('button', { className: 'dt-btn', onClick: () => void report$('open that table in Sheets')(() => sendToSheets(report.name, table)), style: { color: 'inherit', height: 24 }, type: 'button', children: [jsx(Line, { name: 'grid' }), 'Open in Sheets'] })
+              })
+            : null,
+          peers.includes('whiteboard') && report.cards.some(card => card.kind === 'chart')
+            ? jsx(Tip, {
+                label: 'Pin what each chart says to your open board in Whiteboard, as a group of notes',
+                children: jsxs('button', { className: 'dt-btn', onClick: () => void report$('pin that report to the board')(() => sendToBoard(report)), style: { color: 'inherit', height: 24 }, type: 'button', children: [jsx(Line, { name: 'pin' }), 'Pin to board'] })
+              })
+            : null
         ]
       }),
       jsx('div', {
@@ -4339,6 +4527,18 @@ export default {
     pluginOs = ctx.os
     ctx.onDispose(installStyles())
     hydrate(ctx.storage)
+
+    // The other suite pages reach this one through window events (see suiteListen).
+    if (typeof window !== 'undefined') {
+      suiteListen((type, listener) => {
+        if (typeof ctx.addEventListener === 'function') {
+          ctx.addEventListener(window, type, listener)
+        } else {
+          window.addEventListener(type, listener)
+          ctx.onDispose(() => window.removeEventListener(type, listener))
+        }
+      })
+    }
 
     if (typeof ctx.rest === 'function') {
       pluginRest = (path, options) => ctx.rest(path, options)

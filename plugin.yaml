@@ -1,5 +1,5 @@
 name: data
-version: "0.1.0"
+version: "0.1.1"
 description: "An agentic report page. Open an Excel workbook or a CSV and Hermes finds the story: it proposes charts and a headline, and you accept the ones you want onto the page. Every number is computed from your rows, not written by the model. Ask a question and an agent answers with a chart and its sources. Once you allow it, any chat can read your reports and propose charts."
 author: Adolanium
 license: MIT

@@ -15,6 +15,8 @@ An agentic report page for [Hermes Desktop](https://github.com/NousResearch/herm
 - **Make it yours.** Click a bar or a point to move the highlight, and the arrow and the words beside it follow. Redraw a chart as bars, a line, an area, a donut, dots or one big number. Split it by a second column into one coloured series per value. Make it full width, reorder it, rename it, or build your own.
 - **Key points.** The report opens with a short list of what its charts say. Each line is a chart's remark or its computed fact, so the summary cannot claim something a chart does not show.
 - **Share it.** Export the report as a single web page or Markdown, a chart as SVG, or the table as CSV.
+- **With Sheets.** When the [Sheets](https://github.com/Adolanium/hermes-sheets) plugin is on too, **Open in Sheets** opens a report's table there as a new grid, and Sheets' **Chart** button opens a grid here as a new report.
+- **With Whiteboard.** When the [Whiteboard](https://github.com/Adolanium/hermes-whiteboard) plugin is on, **Pin to board** puts what each chart says on your open board as a group of notes. The words are the chart's own remark or its computed fact.
 - **From any chat.** Once you allow it, a Hermes chat can read your reports, propose charts for one, or open a new report from data it gathered.
 
 ![Suggestions waiting beside the page, each with Accept and Skip: one big number from Hermes, and a chart split by drink that a chat proposed](docs/assets/suggestions.jpg)
@@ -68,6 +70,7 @@ Your file  →  this page's storage  →  your Hermes model (a summary and eight
 - **Chats can read my reports** is off until you turn it on in Settings. While it is on, Data keeps a copy of each report under `plugin-data/data/` in your Hermes home: the columns, the charts and the first 400 rows. Turning it off deletes the copies.
 - **Open and export** go through the system dialog. The page opens it with the Desktop SDK and hands the path to Data's own backend, which reads `.xlsx`, `.csv`, `.tsv`, `.txt` and `.json`, writes `.html`, `.md`, `.svg` and `.csv`, and refuses anything inside your Hermes home.
 - A CSV or JSON file you drag onto the page is read by the page itself and never leaves it. A dragged workbook opens the file dialog instead, because only the backend reads workbooks.
+- **Data, Sheets and Whiteboard hand things to each other inside the app window**, with a browser event between the pages, and only when you click. Nothing is written to disk for it, no backend is called and no model is involved. A table that arrives becomes a new report and never changes an existing one. Any other Desktop plugin you have switched on runs in the same window and could send or read such an event.
 - No telemetry, no credentials, no shell commands or background processes of its own. The page makes no network requests of its own.
 
 ## Limits
