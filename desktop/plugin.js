@@ -2393,9 +2393,68 @@ function suiteListen(listen) {
   })
 }
 
+/** Which Hermes backend this page's own routes reach right now. They follow the
+ *  profile selected in Hermes, and every profile keeps its own plugin data: its
+ *  own inbox, its own copies, its own sharing switch. */
+function backendKey() {
+  const read = cell => {
+    try {
+      return String(cell?.get?.() ?? '')
+    } catch {
+      return ''
+    }
+  }
+
+  return `${read(host.state?.connectionId)}|${read(host.state?.profile)}`
+}
+
+/** One round with the chat tools: take what chats sent, and make sure this
+ *  profile's backend has the sharing switch and the report copies. `seen`
+ *  remembers which backend was synced, so a profile switch syncs the new one. */
+async function syncChats(seen) {
+  const backend = backendKey()
+
+  if (backend !== seen.backend) {
+    seen.backend = backend
+    seen.shared = false
+    $chatBridge.set('unknown')
+  }
+
+  try {
+    const answer = await pluginRest('/inbox')
+
+    // The profile changed while Hermes was answering: this reply is the old one's.
+    if (backendKey() !== backend) {
+      return
+    }
+
+    $chatBridge.set('ok')
+
+    for (const entry of Array.isArray(answer?.entries) ? answer.entries : []) {
+      if (backendKey() !== backend) {
+        return
+      }
+
+      takeChatEntry(entry)
+      await pluginRest(`/inbox/${encodeURIComponent(entry.id)}/ack`, { method: 'POST' })
+    }
+
+    if (!seen.shared) {
+      await shareAll()
+      seen.shared = backendKey() === backend
+    }
+  } catch {
+    if (backendKey() === backend) {
+      $chatBridge.set('missing')
+    }
+
+    seen.shared = false
+  }
+}
+
 function watchChats() {
+  const seen = { backend: null, shared: false }
   let stopped = false
-  let shared = false
   let timer = null
 
   const tick = async () => {
@@ -2403,24 +2462,7 @@ function watchChats() {
       return
     }
 
-    try {
-      const answer = await pluginRest('/inbox')
-
-      $chatBridge.set('ok')
-
-      for (const entry of Array.isArray(answer?.entries) ? answer.entries : []) {
-        takeChatEntry(entry)
-        await pluginRest(`/inbox/${encodeURIComponent(entry.id)}/ack`, { method: 'POST' })
-      }
-
-      if (!shared) {
-        shared = true
-        await shareAll()
-      }
-    } catch {
-      $chatBridge.set('missing')
-      shared = false
-    }
+    await syncChats(seen)
 
     if (!stopped) {
       timer = setTimeout(() => void tick(), CHAT_POLL_MS)
@@ -2442,7 +2484,7 @@ function watchChats() {
 // never touches the disk.
 // ---------------------------------------------------------------------------
 
-const BACKEND_OFF = "Data's backend isn't running. Switch the Data plugin on in Capabilities > Plugins, then try again."
+const BACKEND_OFF = "Data's backend isn't running in this Hermes profile. Hermes installs and switches on plugins for each profile separately, so install Data for this profile and switch it on in Capabilities > Plugins, then try again."
 const fileSlug = name => String(name || 'report').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'report'
 
 /** One sheet of a picked Excel workbook, read by the backend. */
@@ -4291,9 +4333,9 @@ function TopBar({ onPaste, report, sheetRef }) {
                           jsx('small', {
                             children:
                               bridge === 'missing'
-                                ? "Data's backend isn't answering. Switch the Data plugin on in Capabilities > Plugins."
+                                ? "Data's backend isn't answering in this Hermes profile. Hermes installs and switches on plugins for each profile separately, so install Data for this profile too and switch it on in Capabilities > Plugins."
                                 : sharing
-                                  ? 'On. Data keeps a copy of each report, with its first 400 rows, in your Hermes home so chats can read it.'
+                                  ? 'On. Data keeps a copy of each report, with its first 400 rows, in the plugin data of the Hermes profile you are in, so chats can read it.'
                                   : 'Off. Reports stay in this page. Turn it on to let any Hermes chat read them and suggest charts.'
                           })
                         ]

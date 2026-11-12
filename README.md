@@ -33,6 +33,18 @@ hermes plugins install Adolanium/hermes-data
 
 Then switch on **Data** in Capabilities › Plugins and open it from the sidebar. It needs Hermes 0.22.6 or newer.
 
+### More than one Hermes profile
+
+The Data page is part of the Desktop app, so it shows in every profile and your reports are the same in all of them. Anything Hermes does from the page runs in the profile you have selected.
+
+Opening and saving files and the chat tools go through the agent half of the plugin. Hermes installs and switches on that half for each profile separately. To use Data fully in another profile, install it for that profile as well:
+
+```sh
+hermes -p <profile> plugins install Adolanium/hermes-data
+```
+
+Then switch it on in **Capabilities › Plugins** while that profile is selected. In a profile without it, the page says its backend is not running there.
+
 No file to hand? Press **Try a sample** for four weeks of a coffee cart.
 
 ## What it reads
@@ -69,7 +81,7 @@ Your file  →  this page's storage  →  your Hermes model (a summary and eight
 ```
 
 - Reports and their tables live in Hermes plugin storage on this desktop.
-- **Chats can read my reports** is off until you turn it on in Settings. While it is on, Data keeps a copy of each report under `plugin-data/data/` in your Hermes home: the columns, the charts and the first 400 rows. Turning it off deletes the copies.
+- **Chats can read my reports** is off until you turn it on in Settings. While it is on, Data keeps a copy of each report under `plugin-data/data/` in your Hermes home: the columns, the charts and the first 400 rows. The copies live in the plugin data of the profile you are in, and each profile where Data is installed gets its own when you open Hermes on it. Turning it off deletes the copies in the profile you are in straight away, and in each other profile the next time you open Hermes on it.
 - **Open and export** go through the system dialog. The page opens it with the Desktop SDK and hands the path to Data's own backend, which reads `.xlsx`, `.csv`, `.tsv`, `.txt` and `.json`, writes `.html`, `.md`, `.svg` and `.csv`, and refuses anything inside your Hermes home.
 - A CSV or JSON file you drag onto the page is read by the page itself and never leaves it. A dragged workbook opens the file dialog instead, because only the backend reads workbooks.
 - **Data, Sheets and Whiteboard hand things to each other inside the app window**, with a browser event between the pages, and only when you click. Nothing is written to disk for it, no backend is called and no model is involved. A table that arrives becomes a new report and never changes an existing one. Any other Desktop plugin you have switched on runs in the same window and could send or read such an event.
