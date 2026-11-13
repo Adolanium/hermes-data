@@ -75,7 +75,13 @@ const MESSAGES = {
     'strip.hide': 'Hide the table',
     'strip.sheets': 'Open in Sheets',
     'strip.board': 'Pin to board',
-    'strip.sample': 'Sample table'
+    'strip.sample': 'Sample table',
+    'rows.show': 'Show the rows',
+    'rows.hide': 'Hide the rows',
+    'rows.behind': 'Rows behind',
+    'rows.mark': 'Which mark',
+    'rows.series': 'Which series',
+    'rows.sheets': 'Open these rows in Sheets'
   },
   zh: {
     nav: '数据',
@@ -121,7 +127,13 @@ const MESSAGES = {
     'strip.hide': '隐藏表格',
     'strip.sheets': '在 Sheets 中打开',
     'strip.board': '钉到白板',
-    'strip.sample': '示例表格'
+    'strip.sample': '示例表格',
+    'rows.show': '查看数据行',
+    'rows.hide': '收起数据行',
+    'rows.behind': '背后的数据行',
+    'rows.mark': '哪个数据点',
+    'rows.series': '哪个系列',
+    'rows.sheets': '在 Sheets 中打开这些行'
   }
 }
 
@@ -812,6 +824,16 @@ function cleanSpec(table, raw) {
   return splits ? { agg, highlight: 'none', series: split.name, type, x: x.name, y: y ? y.name : null } : { agg, highlight, type, x: x.name, y: y ? y.name : null }
 }
 
+/** The rows each mark of a chart was worked out from, kept beside the mark
+ *  rather than on it, so a point stays {key, label, value}. A stat and a scatter
+ *  keep theirs against the whole result. */
+const POINT_ROWS = new WeakMap()
+const withRows = (point, rows) => {
+  POINT_ROWS.set(point, rows)
+
+  return point
+}
+
 /** The points of a chart. `points` are {label, value}; scatter adds x and y,
  *  a trend line and how strongly the two columns move together. */
 function chartData(table, spec) {
@@ -837,7 +859,7 @@ function chartData(table, spec) {
       points = chartData(table, { agg: spec.agg, type: 'line', x: table.columns[dateAt].name, y: spec.y }).points
     }
 
-    return { points, unit, value, yName }
+    return withRows({ points, unit, value, yName }, table.rows)
   }
 
   if (xAt < 0) {
@@ -865,16 +887,19 @@ function chartData(table, spec) {
 
     const slope = sxx > 0 ? sxy / sxx : 0
 
-    return {
-      correlation: sxx > 0 && syy > 0 ? sxy / Math.sqrt(sxx * syy) : 0,
-      count,
-      points,
-      trend: { intercept: meanY - slope * meanX, slope },
-      unit,
-      xName: xColumn.name,
-      xUnit: { prefix: xColumn.prefix, suffix: xColumn.suffix },
-      yName
-    }
+    return withRows(
+      {
+        correlation: sxx > 0 && syy > 0 ? sxy / Math.sqrt(sxx * syy) : 0,
+        count,
+        points,
+        trend: { intercept: meanY - slope * meanX, slope },
+        unit,
+        xName: xColumn.name,
+        xUnit: { prefix: xColumn.prefix, suffix: xColumn.suffix },
+        yName
+      },
+      table.rows.filter(row => typeof row[xAt] === 'number' && typeof row[yAt] === 'number')
+    )
   }
 
   const groups = new Map()
@@ -916,7 +941,7 @@ function chartData(table, spec) {
   }
 
   const single = [...groups.values()].every(rows => rows.length === 1)
-  let points = [...groups.entries()].map(([key, rows]) => ({ key, label: bucket ? bucketLabel(key, bucket) : String(key), value: valuesOf(rows) })).filter(point => point.value !== null)
+  let points = [...groups.entries()].map(([key, rows]) => withRows({ key, label: bucket ? bucketLabel(key, bucket) : String(key), value: valuesOf(rows) }, rows)).filter(point => point.value !== null)
   const ordered = bucket !== null || xColumn.type === 'number' || points.every(point => knownOrder(point.label) >= 0)
 
   if (bucket !== null || xColumn.type === 'number') {
@@ -942,7 +967,7 @@ function chartData(table, spec) {
       points = points.filter(point => kept.has(point))
 
       if (folded !== null) {
-        points.push({ key: '__other', label: `Other (${rest.length})`, other: true, value: folded })
+        points.push(withRows({ key: '__other', label: `Other (${rest.length})`, other: true, value: folded }, rest.flatMap(point => POINT_ROWS.get(point) || [])))
       }
     }
   }
@@ -978,7 +1003,12 @@ function chartData(table, spec) {
   const addable = spec.agg === 'sum' || spec.agg === 'count'
   const names = new Set(kept.map(entry => entry.label))
   const marks = points.filter(point => !point.other)
-  const run = accept => marks.map(point => ({ key: point.key, label: point.label, value: valuesOf((groups.get(point.key) || []).filter(row => accept(nameOf(row)))) }))
+  const run = accept =>
+    marks.map(point => {
+      const rows = (groups.get(point.key) || []).filter(row => accept(nameOf(row)))
+
+      return withRows({ key: point.key, label: point.label, value: valuesOf(rows) }, rows)
+    })
   const series = kept.map(entry => ({ name: entry.label, points: run(name => name === entry.label) }))
   const totals = [...kept]
 
@@ -988,6 +1018,65 @@ function chartData(table, spec) {
   }
 
   return { bucket, ordered, points: marks, series, seriesName: spec.series, single: false, totals, unit, xName: xColumn.name, yName }
+}
+
+const AGG_WORDS = { average: 'Average', max: 'Highest', median: 'Median', min: 'Lowest', sum: 'Sum' }
+
+/** The rows behind one mark, and how its number comes out of them. Nothing is
+ *  worked out again here: these are the rows chartData grouped for that mark.
+ *  `pick` names a mark by its label, and a series by its name on a split chart. */
+function rowsBehind(table, spec, data, pick = {}) {
+  if (!table || !spec || !data) {
+    return null
+  }
+
+  const yAt = columnAt(table, spec.y)
+  const counting = spec.agg === 'count' || yAt < 0
+  let label = ''
+  let rows = []
+  let value = null
+
+  if (spec.type === 'stat') {
+    rows = POINT_ROWS.get(data) || table.rows
+    label = 'the whole table'
+    value = data.value
+  } else if (spec.type === 'scatter') {
+    rows = POINT_ROWS.get(data) || []
+    label = 'every dot'
+  } else {
+    const series = data.series ? data.series.find(entry => entry.name === pick.series) || data.series[0] : null
+    const points = series ? series.points : data.points
+    const point = points.find(entry => entry.label === pick.label) || points[0]
+
+    if (!point) {
+      return null
+    }
+
+    rows = POINT_ROWS.get(point) || []
+    label = series ? `${point.label}, ${series.name}` : point.label
+    value = point.value
+  }
+
+  const used = counting ? rows.length : rows.filter(row => typeof row[yAt] === 'number' && Number.isFinite(row[yAt])).length
+
+  return { agg: counting ? 'count' : spec.agg, label, rows, skipped: rows.length - used, used, value, yName: counting ? '' : table.columns[yAt].name }
+}
+
+/** The working in words: "Sum of revenue over 4 rows = £4,189". */
+function workingLine(behind, unit = {}, type = '') {
+  const rowsWord = count => `${count.toLocaleString('en-US')} ${count === 1 ? 'row' : 'rows'}`
+
+  if (type === 'scatter') {
+    return `${rowsWord(behind.rows.length)} have a number in both columns`
+  }
+
+  if (behind.agg === 'count') {
+    return `${rowsWord(behind.rows.length)} counted`
+  }
+
+  const left = behind.skipped > 0 ? `, ${rowsWord(behind.skipped)} with no number left out` : ''
+
+  return `${AGG_WORDS[behind.agg] || 'Sum'} of ${behind.yName} over ${rowsWord(behind.used)} = ${formatNumber(behind.value, unit, { compact: false })}${left}`
 }
 
 /** Which point a chart is about: the one its spec names, else its highest. */
@@ -3699,6 +3788,19 @@ const CSS = `
 .dt-fact { display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border-radius: 99px; background: hsl(${HERMES_HUE} 96% 88%); border: 1px solid hsl(${HERMES_HUE} 80% 56% / .7); color: hsl(${HERMES_HUE} 80% 20%); font: 600 12px var(--font-sans, system-ui); }
 .dt-src { display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border-radius: 99px; border: 1px solid hsl(232 20% 30% / .25); background: transparent; color: hsl(232 18% 34%); font: 500 11.5px var(--font-sans, system-ui); cursor: pointer; }
 .dt-src:hover { background: hsl(232 20% 30% / .07); }
+.dt-rowsbtn { margin-left: auto; gap: 5px; font-weight: 600; color: ${INK}; border-color: hsl(232 20% 30% / .4); }
+.dt-rowsbtn.dt-on { background: ${INK}; color: ${PAPER}; border-color: ${INK}; }
+.dt-rows { margin-top: 10px; border-radius: 12px; border: 1.2px solid hsl(232 20% 30% / .3); background: hsl(42 50% 96%); overflow: hidden; animation: dt-fade .25s both; }
+.dt-rows-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 9px 12px 0; font: 12.5px var(--font-sans, system-ui); color: ${INK}; }
+.dt-rows-head b { font-weight: 600; }
+.dt-rows-head select { max-width: 60%; height: 26px; padding: 0 6px; border-radius: 8px; border: 1.2px solid hsl(232 20% 30% / .35); background: ${PAPER}; color: ${INK}; font: 600 12.5px var(--font-sans, system-ui); }
+.dt-rows-working { margin: 6px 12px 9px; font: 600 13px/1.35 var(--font-sans, system-ui); color: hsl(${HERMES_HUE} 80% 22%); font-variant-numeric: tabular-nums; }
+.dt-rows-scroll { max-height: 228px; overflow: auto; border-top: 1px solid hsl(232 20% 30% / .18); background: ${PAPER}; }
+.dt-table .dt-used { background: hsl(${HERMES_HUE} 96% 92%); font-weight: 600; }
+.dt-table th.dt-used { background: hsl(${HERMES_HUE} 92% 84%); }
+.dt-rows-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 7px 12px; border-top: 1px solid hsl(232 20% 30% / .18); font: 11.5px var(--font-sans, system-ui); color: hsl(232 14% 40%); }
+.dt-rows-foot:empty { display: none; }
+.dt-rows-foot button { margin-left: auto; }
 .dt-more { position: absolute; top: 12px; right: 12px; display: flex; gap: 2px; opacity: 0; transition: opacity .15s; }
 .dt-card:hover .dt-more, .dt-card.dt-open .dt-more, .dt-card.dt-focus .dt-more { opacity: 1; }
 .dt-more .dt-btn { color: hsl(232 16% 36%); }
@@ -4074,7 +4176,74 @@ function CardMenu({ card, close, rootRef, table }) {
   })
 }
 
+/** The rows behind a mark, under its chart: which rows, the working, and the
+ *  same number the chart shows. */
+function RowsBehind({ card, data, pick, setPick, spec, table }) {
+  const t = usePluginI18n('data')
+  const peers = useValue($peers)
+  const behind = rowsBehind(table, spec, data, pick)
+
+  if (!behind) {
+    return null
+  }
+
+  const xAt = columnAt(table, spec.x)
+  const yAt = columnAt(table, spec.y)
+  const splitAt = spec.series ? columnAt(table, spec.series) : -1
+  // The columns the chart reads come first, then the rest of the row.
+  const order = [...new Set([xAt, splitAt, yAt].filter(at => at >= 0)), ...table.columns.map((_, at) => at)].filter((at, index, all) => all.indexOf(at) === index).slice(0, 7)
+  const shown = behind.rows.slice(0, 100)
+  const marks = spec.type === 'stat' || spec.type === 'scatter' ? [] : data.points
+  const current = marks.find(point => point.label === pick.label) || marks[0]
+
+  return jsxs('div', {
+    className: 'dt-rows',
+    children: [
+      jsxs('div', {
+        className: 'dt-rows-head',
+        children: [
+          jsx('b', { children: t('rows.behind') }),
+          marks.length > 1
+            ? jsx('select', { 'aria-label': t('rows.mark'), onChange: event => setPick({ ...pick, label: event.target.value }), value: current?.label ?? '', children: marks.map(point => jsx('option', { value: point.label, children: point.label }, point.label)) })
+            : jsx('span', { children: behind.label }),
+          data.series
+            ? jsx('select', { 'aria-label': t('rows.series'), onChange: event => setPick({ ...pick, series: event.target.value }), value: pick.series || data.series[0].name, children: data.series.map(entry => jsx('option', { value: entry.name, children: entry.name }, entry.name)) })
+            : null
+        ]
+      }),
+      jsx('p', { className: 'dt-rows-working', children: workingLine(behind, data.unit, spec.type) }),
+      jsx('div', {
+        className: 'dt-rows-scroll',
+        children: jsxs('table', {
+          className: 'dt-table',
+          children: [
+            jsx('thead', { children: jsx('tr', { children: order.map(at => jsx('th', { className: `${table.columns[at].type === 'number' ? 'dt-num' : ''}${at === yAt ? ' dt-used' : ''}`, children: table.columns[at].name }, at)) }) }),
+            jsx('tbody', {
+              children: shown.map((row, index) =>
+                jsx('tr', { children: order.map(at => jsx('td', { className: `${table.columns[at].type === 'number' ? 'dt-num' : ''}${at === yAt ? ' dt-used' : ''}`, children: table.columns[at].type === 'number' ? formatNumber(row[at], table.columns[at], { compact: false }) : row[at] }, at)) }, index)
+              )
+            })
+          ]
+        })
+      }),
+      jsxs('div', {
+        className: 'dt-rows-foot',
+        children: [
+          behind.rows.length > shown.length ? jsx('span', { children: `Showing the first ${shown.length} of ${behind.rows.length.toLocaleString('en-US')} rows` }) : null,
+          table.columns.length > order.length ? jsx('span', { children: `${order.length} of ${table.columns.length} columns` }) : null,
+          peers.includes('sheets') && behind.rows.length > 0
+            ? jsx('button', { className: 'dt-src', onClick: () => void report$('open those rows in Sheets')(() => sendToSheets(`${card.title}: ${behind.label}`, { columns: table.columns, rows: behind.rows })), type: 'button', children: t('rows.sheets') })
+            : null
+        ]
+      })
+    ]
+  })
+}
+
 function CardBody({ card, editable, table }) {
+  const t = usePluginI18n('data')
+  const [rowsOpen, setRowsOpen] = useState(false)
+  const [pick, setPick] = useState({})
   const spec = card.spec
   const data = useMemo(() => (spec ? chartData(table, spec) : null), [table, spec])
   const side = useMemo(() => noteSideOf(table, spec), [table, spec])
@@ -4098,13 +4267,31 @@ function CardBody({ card, editable, table }) {
             children: editable && !swapped ? jsx(Editable, { empty: 'Add a remark', limit: 120, onSave: text => patchCard(card.id, { note: text }), value: note }) : remark
           })
         : null,
-      spec ? jsx(ChartView, { noteSide: remark ? side : null, onPick: label => (editable ? patchCard(card.id, { spec: { highlight: label } }) : pointProposal(card.id, label)), spec, table, wide: card.wide }) : null,
-      (fact && !swapped) || card.sources?.length > 0
+      spec
+        ? jsx(ChartView, {
+            noteSide: remark ? side : null,
+            // Pointing at a mark moves the remark to it, and the rows panel follows.
+            onPick: label => {
+              setPick(now => ({ ...now, label }))
+
+              return editable ? patchCard(card.id, { spec: { highlight: label } }) : pointProposal(card.id, label)
+            },
+            spec,
+            table,
+            wide: card.wide
+          })
+        : null,
+      spec || card.sources?.length > 0
         ? jsxs('div', {
             className: 'dt-foot',
-            children: [fact && !swapped ? jsx('span', { className: 'dt-fact', children: fact }) : null, ...(card.sources || []).map(url => jsx('button', { className: 'dt-src', onClick: () => openSource(url), title: url, type: 'button', children: hostOf(url) }, url))]
+            children: [
+              fact && !swapped ? jsx('span', { className: 'dt-fact', children: fact }) : null,
+              ...(card.sources || []).map(url => jsx('button', { className: 'dt-src', onClick: () => openSource(url), title: url, type: 'button', children: hostOf(url) }, url)),
+              spec && data ? jsx('button', { 'aria-expanded': rowsOpen, className: `dt-src dt-rowsbtn${rowsOpen ? ' dt-on' : ''}`, 'data-rows': true, onClick: () => setRowsOpen(open => !open), type: 'button', children: rowsOpen ? t('rows.hide') : t('rows.show') }) : null
+            ]
           })
-        : null
+        : null,
+      rowsOpen && spec && data ? jsx(RowsBehind, { card, data, pick: { label: pick.label ?? data.points?.[highlightAt(data, spec)]?.label, series: pick.series }, setPick, spec, table }) : null
     ]
   })
 }

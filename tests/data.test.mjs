@@ -20,7 +20,7 @@ function load(options = {}) {
         lastJsonObject, loadTable, moveCard, niceCeil, noteSideOf, openFile, parseDelimited, patchCard, pointProposal, proposalItem, redo, removeCard,
         reportMarkdown, restoreReport, sampleTable, setReport, sharedReportCopy, storyPrompt, tableBrief, tableFromRows, tableFromText,
         takeChatEntry, toDate, toDelimited, toNumber, undo, sendToSheets, suiteGrid, suiteListen, suitePeers, takeSuiteTable,
-        $chatBridge, backendKey, finalAssistantText, profileRequest, recoverReply, runSession, setChatSharing, syncChats
+        $chatBridge, backendKey, finalAssistantText, profileRequest, recoverReply, rowsBehind, runSession, setChatSharing, syncChats, workingLine
       }
     `)
   const atom = initial => {
@@ -1099,4 +1099,110 @@ test('a completion that carries its text is used as it is, with no transcript re
   const failed = turnGateway({ complete: { status: 'error', text: '' }, history: [] })
 
   await assert.rejects((host => load({ host, storage: memoryStorage() }))(failed.host).runSession({ maxMs: 1000, maxSteps: 4, text: 'do it', title: 'T' }), /ended as error/)
+})
+
+// ---------------------------------------------------------------- the rows behind a mark
+test('the rows behind a bar are the rows it was added up from, and they give its number', () => {
+  const dt = load()
+  const table = dt.tableFromText(CSV)
+  const spec = dt.cleanSpec(table, { agg: 'sum', type: 'bar', x: 'day', y: 'CUPS' })
+  const data = dt.chartData(table, spec)
+  const sat = dt.rowsBehind(table, spec, data, { label: 'Sat' })
+  const cups = table.columns.findIndex(column => column.name === 'Cups')
+  const day = table.columns.findIndex(column => column.name === 'Day')
+
+  assert.equal(sat.label, 'Sat')
+  assert.equal(sat.value, 49)
+  assert.equal(sat.rows.every(row => row[day] === 'Sat'), true)
+  assert.equal(sat.rows.reduce((sum, row) => sum + row[cups], 0), 49)
+  assert.equal(sat.used, sat.rows.length)
+  assert.equal(dt.workingLine(sat, data.unit), `Sum of Cups over ${sat.rows.length} rows = 49`)
+  // With no mark named, it is the first one on the chart.
+  assert.equal(dt.rowsBehind(table, spec, data).label, data.points[0].label)
+  // A point stays a plain {key, label, value}: the rows are kept beside it.
+  assert.deepEqual(Object.keys(data.points[0]).sort(), ['key', 'label', 'value'])
+})
+
+test('for every mark of every kind of chart, the rows shown work out to the number drawn', () => {
+  const dt = load()
+  const table = dt.sampleTable()
+  const specs = [
+    { agg: 'sum', type: 'bar', x: 'Drink', y: 'Revenue' },
+    { agg: 'average', type: 'bar', x: 'Day', y: 'Cups' },
+    { agg: 'max', type: 'bar', x: 'Weather', y: 'Cups' },
+    { agg: 'median', type: 'bar', x: 'Drink', y: 'Price' },
+    { agg: 'count', type: 'donut', x: 'Weather', y: 'Cups' },
+    { agg: 'sum', type: 'donut', x: 'Drink', y: 'Revenue' },
+    { agg: 'sum', type: 'line', x: 'Date', y: 'Revenue' },
+    { agg: 'sum', type: 'bar', x: 'Day', y: 'Revenue', series: 'Drink' }
+  ]
+  let checked = 0
+
+  for (const raw of specs) {
+    const spec = dt.cleanSpec(table, raw)
+    const data = dt.chartData(table, spec)
+    const yAt = table.columns.findIndex(column => column.name === spec.y)
+    const marks = data.series ? data.series.flatMap(run => run.points.map(point => ({ point, series: run.name }))) : data.points.map(point => ({ point }))
+
+    assert.equal(marks.length > 1, true, JSON.stringify(raw))
+
+    for (const { point, series } of marks) {
+      const behind = dt.rowsBehind(table, spec, data, { label: point.label, series })
+      const again = dt.combine(spec.agg === 'count' ? behind.rows : behind.rows.map(row => row[yAt]), spec.agg)
+
+      // The rows shown, put through the same sum or average, are the number on the chart.
+      assert.equal(again === point.value || Math.abs(again - point.value) < 1e-9, true, `${JSON.stringify(raw)} ${point.label} ${series || ''}`)
+      assert.equal(behind.value, point.value)
+      checked += 1
+    }
+  }
+
+  assert.equal(checked > 30, true)
+})
+
+test('the Other bar lists everything folded into it, and a stat lists the whole table', () => {
+  const dt = load()
+  const table = dt.tableFromRows([['Item', 'Sold'], ...Array.from({ length: 30 }, (_, at) => [`Item ${at + 1}`, 100 - at])])
+  const spec = dt.cleanSpec(table, { agg: 'sum', type: 'donut', x: 'Item', y: 'Sold' })
+  const data = dt.chartData(table, spec)
+  const other = data.points.find(point => point.other)
+  const behind = dt.rowsBehind(table, spec, data, { label: other.label })
+  const kept = data.points.filter(point => !point.other).length
+
+  assert.equal(behind.rows.length, 30 - kept)
+  assert.equal(behind.rows.reduce((sum, row) => sum + row[1], 0), other.value)
+
+  const stat = dt.cleanSpec(table, { agg: 'sum', type: 'stat', y: 'Sold' })
+  const whole = dt.rowsBehind(table, stat, dt.chartData(table, stat))
+
+  assert.equal(whole.rows.length, 30)
+  assert.equal(whole.value, table.rows.reduce((sum, row) => sum + row[1], 0))
+  assert.equal(dt.workingLine(whole, {}), `Sum of Sold over 30 rows = ${whole.value.toLocaleString('en-US')}`)
+})
+
+test('the working says when rows had no number, how many were counted, and what a scatter draws', () => {
+  const dt = load()
+  const table = dt.tableFromRows([['Shop', 'Price', 'Rating'], ['A', 3, 4], ['A', '', 5], ['A', 5, ''], ['B', 2, 3], ['B', 4, 2]])
+  const spec = dt.cleanSpec(table, { agg: 'average', type: 'bar', x: 'Shop', y: 'Price' })
+  const data = dt.chartData(table, spec)
+  const a = dt.rowsBehind(table, spec, data, { label: 'A' })
+
+  assert.equal(a.rows.length, 3)
+  assert.equal(a.used, 2)
+  assert.equal(a.skipped, 1)
+  assert.equal(a.value, 4)
+  assert.equal(dt.workingLine(a, data.unit), 'Average of Price over 2 rows = 4, 1 row with no number left out')
+
+  const counted = dt.cleanSpec(table, { agg: 'count', type: 'bar', x: 'Shop', y: 'Price' })
+  const b = dt.rowsBehind(table, counted, dt.chartData(table, counted), { label: 'B' })
+
+  assert.equal(b.value, 2)
+  assert.equal(dt.workingLine(b, {}), '2 rows counted')
+
+  const dots = dt.cleanSpec(table, { type: 'scatter', x: 'Price', y: 'Rating' })
+  const both = dt.rowsBehind(table, dots, dt.chartData(table, dots))
+
+  assert.equal(both.rows.length, 3)
+  assert.equal(dt.workingLine(both, {}, 'scatter'), '3 rows have a number in both columns')
+  assert.equal(dt.rowsBehind(null, spec, data), null)
 })
