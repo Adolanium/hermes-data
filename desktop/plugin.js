@@ -3486,7 +3486,7 @@ function Legend({ data, left }) {
   })
 }
 
-function SeriesBars({ data, width }) {
+function SeriesBars({ data, onPick, width }) {
   const [hover, setHover] = useState(null)
   const points = data.points
   const count = data.series.length
@@ -3520,10 +3520,11 @@ function SeriesBars({ data, width }) {
                     className: 'dt-grow',
                     fill: seriesColor(run, at),
                     height: Math.max(1.5, Math.abs(yOf(value) - zero)),
+                    onClick: () => onPick?.(point.label, run.name),
                     onMouseEnter: () => setHover({ at, index, x: x + thick / 2, y: Math.min(zero, yOf(value)) }),
                     onMouseLeave: () => setHover(null),
                     rx: Math.min(5, thick / 3),
-                    style: { animationDelay: `${index * 50 + at * 35}ms` },
+                    style: { animationDelay: `${index * 50 + at * 35}ms`, cursor: 'pointer' },
                     width: Math.max(2, thick - 2),
                     x: x + 1,
                     y: Math.min(zero, yOf(value))
@@ -3542,7 +3543,7 @@ function SeriesBars({ data, width }) {
   })
 }
 
-function SeriesLines({ area, data, width }) {
+function SeriesLines({ area, data, onPick, width }) {
   const [hover, setHover] = useState(-1)
   const points = data.points
   const scale = scaleFor(data.series.flatMap(run => run.points.map(point => point.value ?? 0)))
@@ -3585,7 +3586,7 @@ function SeriesLines({ area, data, width }) {
               (index % every === 0 && points.length - 1 - index >= every * 0.7) || index === points.length - 1
                 ? jsx('text', { fill: AXIS, fontSize: 12, style: { font: LABEL_FONT }, textAnchor: index === points.length - 1 && points.length > 1 ? 'end' : index === 0 ? 'start' : 'middle', x: xOf(index), y: bottom + 20, children: point.label })
                 : null,
-              jsx('rect', { 'data-hover': true, fill: 'transparent', height: bottom - top + 20, onMouseEnter: () => setHover(index), onMouseLeave: () => setHover(-1), width: Math.max(8, (right - left) / points.length), x: xOf(index) - Math.max(4, (right - left) / points.length / 2), y: top - 10 })
+              jsx('rect', { 'data-hover': true, fill: 'transparent', height: bottom - top + 20, onClick: () => onPick?.(point.label), onMouseEnter: () => setHover(index), onMouseLeave: () => setHover(-1), style: { cursor: 'pointer' }, width: Math.max(8, (right - left) / points.length), x: xOf(index) - Math.max(4, (right - left) / points.length / 2), y: top - 10 })
             ]
           },
           point.key
@@ -3673,7 +3674,7 @@ function ChartView({ noteSide, onPick, spec, table, wide }) {
   if (empty) {
     body = jsx('text', { fill: AXIS, fontSize: 14, style: { font: LABEL_FONT, fontSize: 14 }, textAnchor: 'middle', x: width / 2, y: CHART_H / 2, children: 'Nothing to draw for these columns' })
   } else if (data.series) {
-    body = spec.type === 'bar' ? jsx(SeriesBars, { data, width }) : jsx(SeriesLines, { area: spec.type === 'area', data, width })
+    body = spec.type === 'bar' ? jsx(SeriesBars, { data, onPick, width }) : jsx(SeriesLines, { area: spec.type === 'area', data, onPick, width })
   } else if (spec.type === 'bar') {
     body = jsx(BarChart, { data, lit, noteSide, onPick, width })
   } else if (spec.type === 'line' || spec.type === 'area') {
@@ -4271,8 +4272,13 @@ function CardBody({ card, editable, table }) {
         ? jsx(ChartView, {
             noteSide: remark ? side : null,
             // Pointing at a mark moves the remark to it, and the rows panel follows.
-            onPick: label => {
-              setPick(now => ({ ...now, label }))
+            onPick: (label, series) => {
+              setPick(now => ({ ...now, label, ...(series ? { series } : {}) }))
+
+              // A split chart has no single highlighted mark, so only the rows panel moves.
+              if (spec.series) {
+                return undefined
+              }
 
               return editable ? patchCard(card.id, { spec: { highlight: label } }) : pointProposal(card.id, label)
             },
